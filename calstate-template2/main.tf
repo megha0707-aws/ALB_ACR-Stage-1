@@ -50,8 +50,8 @@ resource "azurerm_user_assigned_identity" "alb" {
 # ----- Workload Identity Federation -----
 
 resource "azurerm_federated_identity_credential" "alb" {
-  name      = "alb-federated"
-  parent_id = azurerm_user_assigned_identity.alb.id
+  name                        = "alb-federated"
+  user_assigned_identity_id   = azurerm_user_assigned_identity.alb.id
 
   audience = ["api://AzureADTokenExchange"]
   issuer   = data.azurerm_kubernetes_cluster.grouper.oidc_issuer_url
@@ -86,6 +86,7 @@ resource "azapi_resource" "alb_association" {
   body = {
     properties = {
       associationType = "subnets"
+
       subnet = {
         id = data.azurerm_subnet.appgw.id
       }
@@ -139,12 +140,14 @@ resource "kubernetes_namespace" "grouper_app" {
 # ----- Grouper Deployment -----
 
 resource "kubernetes_deployment" "grouper" {
+
   metadata {
     name      = "grouper"
     namespace = kubernetes_namespace.grouper_app.metadata[0].name
   }
 
   spec {
+
     replicas = 1
 
     selector {
@@ -154,6 +157,7 @@ resource "kubernetes_deployment" "grouper" {
     }
 
     template {
+
       metadata {
         labels = {
           app = "grouper"
@@ -161,8 +165,10 @@ resource "kubernetes_deployment" "grouper" {
       }
 
       spec {
+
         container {
           name  = "grouper"
+
           image = "${var.acr_name}.azurecr.io/grouper:${var.grouper_image_tag}"
 
           port {
@@ -177,12 +183,14 @@ resource "kubernetes_deployment" "grouper" {
 # ----- Grouper Service -----
 
 resource "kubernetes_service" "grouper" {
+
   metadata {
     name      = "grouper-service"
     namespace = kubernetes_namespace.grouper_app.metadata[0].name
   }
 
   spec {
+
     selector = {
       app = "grouper"
     }
@@ -191,6 +199,8 @@ resource "kubernetes_service" "grouper" {
       port        = 80
       target_port = 80
     }
+
+    type = "ClusterIP"
   }
 }
 
@@ -204,7 +214,12 @@ resource "time_sleep" "wait_for_crds" {
 # ----- Gateway -----
 
 resource "kubernetes_manifest" "gateway" {
+
   depends_on = [time_sleep.wait_for_crds]
+
+  field_manager {
+    force_conflicts = true
+  }
 
   manifest = {
     apiVersion = "gateway.networking.k8s.io/v1"
@@ -220,6 +235,7 @@ resource "kubernetes_manifest" "gateway" {
     }
 
     spec = {
+
       gatewayClassName = "azure-alb-external"
 
       listeners = [
@@ -248,7 +264,12 @@ resource "kubernetes_manifest" "httproute" {
     time_sleep.wait_for_crds
   ]
 
+  field_manager {
+    force_conflicts = true
+  }
+
   manifest = {
+
     apiVersion = "gateway.networking.k8s.io/v1"
     kind       = "HTTPRoute"
 
@@ -258,6 +279,7 @@ resource "kubernetes_manifest" "httproute" {
     }
 
     spec = {
+
       parentRefs = [
         {
           name      = "grouper-gateway"
