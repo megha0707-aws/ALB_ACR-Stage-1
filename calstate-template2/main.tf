@@ -50,9 +50,8 @@ resource "azurerm_user_assigned_identity" "alb" {
 # ----- Workload Identity Federation -----
 
 resource "azurerm_federated_identity_credential" "alb" {
-  name                = "alb-federated"
-  resource_group_name = data.azurerm_resource_group.grouper.name
-  parent_id           = azurerm_user_assigned_identity.alb.id
+  name      = "alb-federated"
+  parent_id = azurerm_user_assigned_identity.alb.id
 
   audience = ["api://AzureADTokenExchange"]
   issuer   = data.azurerm_kubernetes_cluster.grouper.oidc_issuer_url
@@ -149,12 +148,16 @@ resource "kubernetes_deployment" "grouper" {
     replicas = 1
 
     selector {
-      match_labels = { app = "grouper" }
+      match_labels = {
+        app = "grouper"
+      }
     }
 
     template {
       metadata {
-        labels = { app = "grouper" }
+        labels = {
+          app = "grouper"
+        }
       }
 
       spec {
@@ -180,7 +183,9 @@ resource "kubernetes_service" "grouper" {
   }
 
   spec {
-    selector = { app = "grouper" }
+    selector = {
+      app = "grouper"
+    }
 
     port {
       port        = 80
@@ -193,7 +198,7 @@ resource "kubernetes_service" "grouper" {
 
 resource "time_sleep" "wait_for_crds" {
   depends_on      = [helm_release.alb_controller]
-  create_duration = "60s"
+  create_duration = "180s"
 }
 
 # ----- Gateway -----
@@ -204,25 +209,32 @@ resource "kubernetes_manifest" "gateway" {
   manifest = {
     apiVersion = "gateway.networking.k8s.io/v1"
     kind       = "Gateway"
+
     metadata = {
       name      = "grouper-gateway"
       namespace = kubernetes_namespace.grouper_app.metadata[0].name
+
       annotations = {
         "alb.networking.azure.io/alb-id" = azapi_resource.alb.id
       }
     }
+
     spec = {
       gatewayClassName = "azure-alb-external"
-      listeners = [{
-        name     = "http"
-        port     = 80
-        protocol = "HTTP"
-        allowedRoutes = {
-          namespaces = {
-            from = "Same"
+
+      listeners = [
+        {
+          name     = "http"
+          port     = 80
+          protocol = "HTTP"
+
+          allowedRoutes = {
+            namespaces = {
+              from = "Same"
+            }
           }
         }
-      }]
+      ]
     }
   }
 }
@@ -230,26 +242,39 @@ resource "kubernetes_manifest" "gateway" {
 # ----- HTTPRoute -----
 
 resource "kubernetes_manifest" "httproute" {
-  depends_on = [kubernetes_manifest.gateway]
+
+  depends_on = [
+    kubernetes_manifest.gateway,
+    time_sleep.wait_for_crds
+  ]
 
   manifest = {
     apiVersion = "gateway.networking.k8s.io/v1"
     kind       = "HTTPRoute"
+
     metadata = {
       name      = "grouper-route"
       namespace = kubernetes_namespace.grouper_app.metadata[0].name
     }
+
     spec = {
-      parentRefs = [{
-        name      = "grouper-gateway"
-        namespace = kubernetes_namespace.grouper_app.metadata[0].name
-      }]
-      rules = [{
-        backendRefs = [{
-          name = "grouper-service"
-          port = 80
-        }]
-      }]
+      parentRefs = [
+        {
+          name      = "grouper-gateway"
+          namespace = kubernetes_namespace.grouper_app.metadata[0].name
+        }
+      ]
+
+      rules = [
+        {
+          backendRefs = [
+            {
+              name = "grouper-service"
+              port = 80
+            }
+          ]
+        }
+      ]
     }
   }
 }
