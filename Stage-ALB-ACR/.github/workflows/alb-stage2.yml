@@ -1,0 +1,117 @@
+name: ALB Stage2 Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:   # Also keep manual trigger as backup
+
+concurrency:
+  group: terraform-state
+  cancel-in-progress: false
+
+jobs:
+  terraform-stage2:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: calstate-template2
+
+    env:
+      ARM_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_CLIENT_SECRET:   ${{ secrets.AZURE_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+      ARM_ACCESS_KEY:      ${{ secrets.ARM_ACCESS_KEY }}
+
+    steps:
+
+      # ── 1. Checkout code ──────────────────────────────────────
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ── 2. Install Terraform ──────────────────────────────────
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      # ── 3. Login to Azure ─────────────────────────────────────
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: |
+            {
+              "clientId":       "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret":   "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId":       "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      # ── 4. Get AKS credentials (so Helm + kubectl work) ───────
+      - name: Get AKS Credentials
+        run: |
+          az aks get-credentials \
+            --resource-group Grouper-Dev \
+            --name aks-grouper-dev-cluster \
+            --overwrite-existing
+
+      # ── 5. Add GitHub runner IP to AKS authorized IP ranges ───
+      - name: Whitelist Runner IP on AKS
+        run: |
+          RUNNER_IP=$(curl -s ifconfig.me)
+          echo "Runner IP: $RUNNER_IP"
+
+          EXISTING_IPS=$(az aks show \
+            --name aks-grouper-dev-cluster \
+            --resource-group Grouper-Dev \
+            --query "apiServerAccessProfile.authorizedIpRanges" \
+            -o tsv | tr '\t' ',')
+
+          az aks update \
+            --name aks-grouper-dev-cluster \
+            --resource-group Grouper-Dev \
+            --api-server-authorized-ip-ranges "${EXISTING_IPS},${RUNNER_IP}/32"
+
+          echo "Waiting 30s for IP whitelist to propagate..."
+          sleep 30
+
+      # ── 6. Terraform Init ─────────────────────────────────────
+      - name: Terraform Init
+        run: terraform init -reconfigure
+
+      # ── 7. Force Unlock (safety measure) ──────────────────────
+      - name: Force Unlock State
+        run: terraform force-unlock -force 55f0fef5-2c13-0ac1-a06c-ff2f966a3a10 || true
+
+      # ── 8. Terraform Validate ─────────────────────────────────
+      - name: Terraform Validate
+        run: terraform validate
+
+      # ── 9. Terraform Plan ─────────────────────────────────────
+      - name: Terraform Plan
+        run: terraform plan -input=false -var-file="terraform.tfvars"
+
+      # ── 10. Terraform Apply ───────────────────────────────────
+      - name: Terraform Apply
+        run: terraform apply -input=false -auto-approve -var-file="terraform.tfvars"
+
+      # ── 11. Remove runner IP from AKS after apply ─────────────
+      - name: Remove Runner IP from AKS
+        if: always()   # runs even if apply fails — keeps AKS clean
+        run: |
+          RUNNER_IP=$(curl -s ifconfig.me)
+
+          CLEANED_IPS=$(az aks show \
+            --name aks-grouper-dev-cluster \
+            --resource-group Grouper-Dev \
+            --query "apiServerAccessProfile.authorizedIpRanges" \
+            -o tsv | tr '\t' '\n' | grep -v "${RUNNER_IP}" | tr '\n' ',' | sed 's/,$//')
+
+          az aks update \
+            --name aks-grouper-dev-cluster \
+            --resource-group Grouper-Dev \
+            --api-server-authorized-ip-ranges "$CLEANED_IPS"
+
+          echo "Runner IP removed. AKS is clean."

@@ -1,0 +1,7 @@
+resource_group_name = "Grouper-Dev"
+vnet_name           = "grouper-dev-tf-vnet"
+aks_cluster_name    = "aks-grouper-dev-cluster"
+name_prefix         = "grouper-dev"
+subscription_id = "91ea5a42-5e9b-4c0c-a766-ea2a2aaa3ace"
+acr_name          = "grouperdevacrpoc"
+grouper_image_tag = "latest"
