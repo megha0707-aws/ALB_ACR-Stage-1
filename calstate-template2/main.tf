@@ -1,7 +1,8 @@
 # ============================================================
 # Calstate Template 2 — Grouper ALB POC
 # Stage 1 ONLY
-# Uses EXISTING App Gateway subnet from infra
+# TEMP VERSION — Gateway + HTTPRoute REMOVED
+# First apply installs ALB Controller + Gateway API CRDs
 # ============================================================
 
 # ----- Read existing calstate infra -----
@@ -50,8 +51,8 @@ resource "azurerm_user_assigned_identity" "alb" {
 # ----- Workload Identity Federation -----
 
 resource "azurerm_federated_identity_credential" "alb" {
-  name                        = "alb-federated"
-  user_assigned_identity_id   = azurerm_user_assigned_identity.alb.id
+  name                      = "alb-federated"
+  user_assigned_identity_id = azurerm_user_assigned_identity.alb.id
 
   audience = ["api://AzureADTokenExchange"]
   issuer   = data.azurerm_kubernetes_cluster.grouper.oidc_issuer_url
@@ -104,7 +105,7 @@ resource "azurerm_role_assignment" "acr_pull" {
 }
 
 # ============================================================
-# STAGE 2 — ALB Controller, App, Gateway, HTTPRoute
+# STAGE 2 — ALB Controller + App Deployment
 # ============================================================
 
 # ----- ALB Controller via Helm -----
@@ -209,94 +210,4 @@ resource "kubernetes_service" "grouper" {
 resource "time_sleep" "wait_for_crds" {
   depends_on      = [helm_release.alb_controller]
   create_duration = "180s"
-}
-
-# ----- Gateway -----
-
-resource "kubernetes_manifest" "gateway" {
-
-  depends_on = [time_sleep.wait_for_crds]
-
-  field_manager {
-    force_conflicts = true
-  }
-
-  manifest = {
-    apiVersion = "gateway.networking.k8s.io/v1"
-    kind       = "Gateway"
-
-    metadata = {
-      name      = "grouper-gateway"
-      namespace = kubernetes_namespace.grouper_app.metadata[0].name
-
-      annotations = {
-        "alb.networking.azure.io/alb-id" = azapi_resource.alb.id
-      }
-    }
-
-    spec = {
-
-      gatewayClassName = "azure-alb-external"
-
-      listeners = [
-        {
-          name     = "http"
-          port     = 80
-          protocol = "HTTP"
-
-          allowedRoutes = {
-            namespaces = {
-              from = "Same"
-            }
-          }
-        }
-      ]
-    }
-  }
-}
-
-# ----- HTTPRoute -----
-
-resource "kubernetes_manifest" "httproute" {
-
-  depends_on = [
-    kubernetes_manifest.gateway,
-    time_sleep.wait_for_crds
-  ]
-
-  field_manager {
-    force_conflicts = true
-  }
-
-  manifest = {
-
-    apiVersion = "gateway.networking.k8s.io/v1"
-    kind       = "HTTPRoute"
-
-    metadata = {
-      name      = "grouper-route"
-      namespace = kubernetes_namespace.grouper_app.metadata[0].name
-    }
-
-    spec = {
-
-      parentRefs = [
-        {
-          name      = "grouper-gateway"
-          namespace = kubernetes_namespace.grouper_app.metadata[0].name
-        }
-      ]
-
-      rules = [
-        {
-          backendRefs = [
-            {
-              name = "grouper-service"
-              port = 80
-            }
-          ]
-        }
-      ]
-    }
-  }
 }
