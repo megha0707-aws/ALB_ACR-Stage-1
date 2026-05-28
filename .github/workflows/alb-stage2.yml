@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:   # Also keep manual trigger as backup
+  workflow_dispatch:
 
 concurrency:
   group: terraform-state
@@ -39,17 +39,17 @@ jobs:
 
       # ── 3. Login to Azure ─────────────────────────────────────
       - name: Azure Login
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           creds: |
             {
-              "clientId":       "${{ secrets.AZURE_CLIENT_ID }}",
-              "clientSecret":   "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
               "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
-              "tenantId":       "${{ secrets.AZURE_TENANT_ID }}"
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
             }
 
-      # ── 4. Get AKS credentials (so Helm + kubectl work) ───────
+      # ── 4. Get AKS credentials ────────────────────────────────
       - name: Get AKS Credentials
         run: |
           az aks get-credentials \
@@ -66,13 +66,23 @@ jobs:
           EXISTING_IPS=$(az aks show \
             --name aks-grouper-dev-cluster \
             --resource-group Grouper-Dev \
-            --query "apiServerAccessProfile.authorizedIpRanges" \
-            -o tsv | tr '\t' ',')
+            --query "apiServerAccessProfile.authorizedIpRanges[]" \
+            -o tsv | paste -sd "," -)
+
+          echo "Existing IPs: $EXISTING_IPS"
+
+          if [ -z "$EXISTING_IPS" ]; then
+            FINAL_IPS="${RUNNER_IP}/32"
+          else
+            FINAL_IPS="${EXISTING_IPS},${RUNNER_IP}/32"
+          fi
+
+          echo "Final IP list: $FINAL_IPS"
 
           az aks update \
             --name aks-grouper-dev-cluster \
             --resource-group Grouper-Dev \
-            --api-server-authorized-ip-ranges "${EXISTING_IPS},${RUNNER_IP}/32"
+            --api-server-authorized-ip-ranges "$FINAL_IPS"
 
           echo "Waiting 30s for IP whitelist to propagate..."
           sleep 30
@@ -99,15 +109,17 @@ jobs:
 
       # ── 11. Remove runner IP from AKS after apply ─────────────
       - name: Remove Runner IP from AKS
-        if: always()   # runs even if apply fails — keeps AKS clean
+        if: always()
         run: |
           RUNNER_IP=$(curl -s ifconfig.me)
 
           CLEANED_IPS=$(az aks show \
             --name aks-grouper-dev-cluster \
             --resource-group Grouper-Dev \
-            --query "apiServerAccessProfile.authorizedIpRanges" \
-            -o tsv | tr '\t' '\n' | grep -v "${RUNNER_IP}" | tr '\n' ',' | sed 's/,$//')
+            --query "apiServerAccessProfile.authorizedIpRanges[]" \
+            -o tsv | grep -v "${RUNNER_IP}" | paste -sd "," -)
+
+          echo "Cleaned IPs: $CLEANED_IPS"
 
           az aks update \
             --name aks-grouper-dev-cluster \
